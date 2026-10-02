@@ -139,6 +139,28 @@ email constraint server-side. Emails go through `EMAIL_PROVIDER`:
 
 Errors are `{ "error": { "code", "message" } }` with friendly messages; 429 includes `Retry-After`.
 
+## Troubleshooting
+
+**Signup (or login) answers `500` with "Something went wrong. Please try again."**
+
+Every 5xx now carries a `requestId` and the backend logs the real cause for that id
+(`{"level":"error","requestId":"...","error":"...","code":"...","detail":"..."}`).
+The two common causes are:
+
+* `database_not_initialized` — `DATABASE_URL` points at a database that has no MAX tables
+  (a fresh Supabase/Neon/Render Postgres, or one where the schema was never applied).
+  The server creates them itself on the first request (`drizzle/` migrations, applied once
+  and recorded in `drizzle.__drizzle_migrations`); if that fails, look for a
+  `db.migrate.failed` line in the log. Fix manually with `npm run db:migrate` (or
+  `npx drizzle-kit push`) against the same `DATABASE_URL`.
+* `database_unavailable` — wrong/unreachable `DATABASE_URL`, bad credentials, or the
+  database is refusing connections.
+* `database_error` — PostgreSQL rejected the statement itself (constraint violation,
+  missing permission, bad input). The `sqlState` in the log identifies which.
+
+`GET /api/health` reports `schema: "ready"` when MAX's tables are in place and
+`schema: "failed"` when they are not, so a deployment problem is visible before users hit it.
+
 ## Android permissions
 
 Requested only when needed, with an explanation first: `RECORD_AUDIO` (tap-to-talk only), `READ_CONTACTS` ("Call Dad"),
@@ -152,8 +174,10 @@ See **[DEVELOPMENT_SETUP.md](DEVELOPMENT_SETUP.md)**. Quick start for the backen
 ```bash
 cp .env.example .env        # fill in DATABASE_URL etc.
 npm install
-npx drizzle-kit push        # creates the tables
 npm run build && npm start  # or: npm run dev
+# The server applies its own migrations (drizzle/) on the first request, so MAX's
+# tables are created automatically — even on a brand-new/empty database.
+# Manual equivalents (optional): npm run db:migrate | npx drizzle-kit push
 ```
 
 Tests:

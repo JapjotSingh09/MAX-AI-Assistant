@@ -94,11 +94,24 @@ Edit `.env`:
 
 **Never commit `.env`** (it is in `.gitignore`).
 
-## 13. Run database migrations
+## 13. Database schema
+The server applies its own migrations at start-up, so there is no mandatory manual step:
+just point `DATABASE_URL` at any empty PostgreSQL database and run the backend — MAX's
+tables (`users`, `sessions`, `auth_tokens`, `rate_limits`, ...) are created on the first
+request. Applied migrations are tracked in `drizzle.__drizzle_migrations`, so it is a no-op
+afterwards and it never touches existing rows.
 ```bash
 npm install
+npm run build && npm start   # tables are created automatically on first use
+```
+Do it by hand if you prefer (same `DATABASE_URL`, same result):
+```bash
+npm run db:migrate     # applies drizzle/*.sql
+# or, to sync directly from src/db/schema.ts:
 npx drizzle-kit push
 ```
+`GET /api/health` answers `schema: "ready"` once the tables exist (and `schema: "failed"`
+if they could not be created), so a misconfigured deployment is obvious immediately.
 
 ## 14. Start the backend
 ```bash

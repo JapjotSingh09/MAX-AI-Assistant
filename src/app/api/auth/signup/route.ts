@@ -4,7 +4,7 @@ import { db } from "@/db";
 import { profiles, userPreferences, users } from "@/db/schema";
 import { hashPassword } from "@/lib/auth";
 import { sendVerificationEmail, sessionResponse } from "@/lib/authFlow";
-import { api, ApiError, readJson } from "@/lib/http";
+import { api, ApiError, isUniqueViolation, readJson } from "@/lib/http";
 
 export const dynamic = "force-dynamic";
 
@@ -24,9 +24,17 @@ export const POST = api({ auth: false, authBucket: "signup" }, async ({ req }) =
   try {
     const [u] = await db.insert(users).values({ email: body.email, passwordHash }).returning({ id: users.id });
     userId = u.id;
-  } catch {
-    // Unique constraint: two signup requests raced. The database is the source of truth.
-    throw new ApiError(409, "email_taken", "An account with this email already exists. Try signing in.");
+  } catch (err) {
+    // Only a unique violation really means "this email already exists": two
+    // signup requests raced and the database is the source of truth. Every other
+    // failure (missing table, no permission, dropped connection) must NOT be
+    // reported as a duplicate account — it has to reach the shared handler so it
+    // is classified as the database error it actually is and logged with its
+    // SQLSTATE, instead of being silently converted.
+    if (isUniqueViolation(err)) {
+      throw new ApiError(409, "email_taken", "An account with this email already exists. Try signing in.");
+    }
+    throw err;
   }
   await db.insert(profiles).values({ id: userId, fullName: body.fullName || body.email.split("@")[0] });
   await db.insert(userPreferences).values({ userId });
