@@ -1,0 +1,13 @@
+# Copy to `local.properties` (same folder) and edit. NEVER commit local.properties.
+# This file is only an example — Gradle reads `local.properties`, not this file.
+
+# Android SDK location (Android Studio writes this for you):
+# sdk.dir=C\:\\Users\\YOU\\AppData\\Local\\Android\\Sdk
+
+# --- Backend URL used by the Android app ---
+# LOCAL TESTING (pick one, needs phone + PC on the same Wi-Fi):
+#   Emulator:  MAX_API_BASE_URL=http://10.0.2.2:3000/
+#   Real phone: MAX_API_BASE_URL=http://192.168.x.x:3000/   (your PC's LAN IP)
+#
+# FINAL APK (after your backend is on Render — REQUIRED, https only):
+#   MAX_API_BASE_URL=https://<your-app>.onrender.com/

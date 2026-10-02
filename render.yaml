@@ -1,0 +1,76 @@
+# Render blueprint for the MAX backend (Next.js API + web console).
+# Usage: push this repo to GitHub, then in Render Dashboard -> New -> Blueprint
+# and select this repo. Render reads this file and pre-fills everything below.
+# Values marked `sync: false` must be entered once in the dashboard (never committed).
+services:
+  - type: web
+    name: max-api
+    runtime: node
+    plan: free
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Public URL of this service (used in email links). Set to your Render URL after deploy.
+      - key: APP_URL
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: AI_PROVIDER
+        sync: false
+      - key: AI_MODEL
+        sync: false
+      - key: AI_API_KEY
+        sync: false
+      - key: AI_BASE_URL
+        sync: false
+      - key: AI_FALLBACK_PROVIDER
+        sync: false
+      - key: AI_FALLBACK_MODEL
+        sync: false
+      - key: AI_FALLBACK_API_KEY
+        sync: false
+      - key: AI_TIMEOUT_MS
+        value: 20000
+      - key: AI_MAX_RETRIES
+        value: 2
+      - key: EMAIL_PROVIDER
+        value: smtp
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        value: 587
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: SMTP_FROM
+        sync: false
+      - key: REQUIRE_EMAIL_VERIFICATION
+        value: false
+      - key: RATE_LIMIT_AUTH_PER_MINUTE
+        value: 10
+      - key: RATE_LIMIT_API_PER_MINUTE
+        value: 120
+      - key: RATE_LIMIT_AI_PER_MINUTE
+        value: 10
+      - key: RATE_LIMIT_AI_PER_DAY
+        value: 200
+      - key: RATE_LIMIT_VOICE_PER_MINUTE
+        value: 20
+      - key: RATE_LIMIT_AUTOMATION_CREATES_PER_DAY
+        value: 50
+      - key: RATE_LIMIT_EXPENSIVE_PER_MINUTE
+        value: 5
+      - key: MAX_MESSAGE_LENGTH
+        value: 2000
+      - key: MAX_CONVERSATION_LENGTH
+        value: 200
+
+# Optional: a managed Postgres for MAX. If you already have a database
+# (Supabase/Neon/...), skip this and just set DATABASE_URL above instead.
+databases:
+  - name: max-db
+    plan: free

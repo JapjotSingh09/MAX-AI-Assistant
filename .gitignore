@@ -1,0 +1,23 @@
+# secrets
+.env
+.env.*
+!.env.example
+*.keystore
+*.jks
+keystore.properties
+local.properties
+
+# node / next
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+next-env.d.ts
+
+# android
+android/.gradle/
+android/build/
+android/app/build/
+android/.idea/
+*.apk
+*.aab
