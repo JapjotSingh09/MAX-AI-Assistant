@@ -19,6 +19,7 @@
     "@types/react-dom": "19.2.3",
     "dotenv": "17.3.1",
     "drizzle-orm": "0.45.2",
+    "drizzle-kit": "0.31.10",
     "next": "16.2.6",
     "nodemailer": "^10.0.13",
     "pg": "8.20.0",
@@ -31,7 +32,6 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
-    "drizzle-kit": "0.31.10",
     "eslint": "9.39.4",
     "eslint-config-next": "16.2.6"
   }
