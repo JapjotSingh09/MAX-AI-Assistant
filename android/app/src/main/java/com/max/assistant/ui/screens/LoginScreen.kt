@@ -26,6 +26,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import com.max.assistant.BuildConfig
 import com.max.assistant.data.remote.ApiException
 import com.max.assistant.data.remote.MaxApiClient
 import com.max.assistant.services.VoiceState
@@ -79,11 +80,12 @@ fun LoginScreen(api: MaxApiClient, onSignedIn: () -> Unit) {
                         else { isLoggingIn = true; api.login(email, password) }
                         onSignedIn()
                     } catch (e: ApiException) {
-                        android.util.Log.e("MaxAuth", "sign-in failure (code=${e.code}): ${e.message}")
+                        // Debug aid only: e.message is already user-safe (never a password/token).
+                        if (BuildConfig.DEBUG) android.util.Log.e("MaxAuth", "sign-in failure (code=${e.code}): ${e.message}")
                         error = e.message
                         if (e.code == 429) cooldown = 20
                     } catch (e: Exception) {
-                        android.util.Log.e("MaxAuth", "unexpected sign-in failure: ${e.javaClass.simpleName}: ${e.message}")
+                        if (BuildConfig.DEBUG) android.util.Log.e("MaxAuth", "unexpected sign-in failure: ${e.javaClass.simpleName}: ${e.message}")
                         error = "Something went wrong. Please try again."
                     } finally {
                         isSigningUp = false

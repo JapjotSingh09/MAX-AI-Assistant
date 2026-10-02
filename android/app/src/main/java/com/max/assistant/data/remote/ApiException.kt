@@ -11,12 +11,20 @@ object FriendlyErrors {
     const val SESSION_EXPIRED = "Your session has expired. Please sign in again."
     const val AI_DOWN = "MAX's AI service is temporarily unavailable."
     const val GENERIC = "Something went wrong. Please try again."
+    // The server answered 2xx but without a session token. Rare (an out-of-date
+    // app), and worth saying plainly instead of "something went wrong".
+    const val NO_SESSION = "Sign-in did not complete. Please update MAX and try again."
 
-    fun forStatus(code: Int, serverMessage: String?): String = when (code) {
-        429 -> TOO_MANY
-        401 -> serverMessage ?: SESSION_EXPIRED
-        503 -> AI_DOWN
-        in 400..499 -> serverMessage ?: GENERIC // the backend sends already-friendly text
+    // The backend always sends already-friendly text (it never leaks internals).
+    // Prefer it for BOTH 4xx and 5xx so a real cause – for example
+    // "MAX's database isn't set up yet." – is shown instead of hiding it behind
+    // the generic message. 429 keeps its standard wording; 503 falls back to the
+    // AI wording only when the server sent no message.
+    fun forStatus(code: Int, serverMessage: String?): String = when {
+        code == 429 -> TOO_MANY
+        code == 401 -> serverMessage ?: SESSION_EXPIRED
+        !serverMessage.isNullOrBlank() -> serverMessage
+        code == 503 -> AI_DOWN
         else -> GENERIC
     }
 }

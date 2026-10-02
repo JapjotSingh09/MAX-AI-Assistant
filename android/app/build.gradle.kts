@@ -77,24 +77,41 @@ android {
             // your Wi-Fi. There is deliberately no localhost / LAN / emulator
             // fallback here: building a release without a real URL fails fast
             // with instructions instead of shipping a broken app.
-            // (Checked only when a release task actually runs, so debug builds
-            // and IDE sync keep working with zero setup.)
-            val releaseTasks = gradle.startParameter.taskNames.any { it.contains("release", ignoreCase = true) }
-            val releaseApiUrl = apiUrlFromConfig()
-            if (releaseTasks) {
-                if (releaseApiUrl.isNullOrBlank()) {
-                    throw GradleException(
-                        "MAX_API_BASE_URL is not set. Set your public backend URL first, e.g.:\n" +
-                            "  \$env:MAX_API_BASE_URL=\"https://<your-app>.onrender.com/\"  # PowerShell\n" +
-                            "  MAX_API_BASE_URL=https://<your-app>.onrender.com/ ./gradlew assembleRelease  # macOS/Linux\n" +
-                            "or add MAX_API_BASE_URL=https://<your-app>.onrender.com/ to android/local.properties."
-                    )
+            //
+            // WHY a task-graph listener instead of checking task names here:
+            // Android Studio's "Generate Signed APK" runs Gradle through the
+            // Tooling API with EMPTY startParameter.taskNames, so a task-name
+            // check silently skips validation and the release APK would bake in
+            // the debug emulator URL (http://10.0.2.2:3000/) — which times out
+            // on every real phone. This listener fires for CLI and IDE builds
+            // alike, before any work runs. Only assemble/bundle tasks are
+            // checked so plain unit tests and lint keep working with zero setup.
+            gradle.taskGraph.addTaskExecutionGraphListener { graph ->
+                val releaseScheduled = graph.allTasks.any { t ->
+                    t.name.contains("Release", ignoreCase = true) &&
+                        (t.name.startsWith("assemble", ignoreCase = true) || t.name.startsWith("bundle", ignoreCase = true))
                 }
-                if (!releaseApiUrl.startsWith("https://")) {
-                    throw GradleException("Release API_BASE_URL must be https:// (got \"$releaseApiUrl\"). LAN/emulator http:// URLs are debug-only.")
+                if (releaseScheduled) {
+                    val url = apiUrlFromConfig()
+                    if (url.isNullOrBlank()) {
+                        throw GradleException(
+                            "MAX_API_BASE_URL is not set. Set your public backend URL first, e.g.:\n" +
+                                "  \$env:MAX_API_BASE_URL=\"https://max-api-os5x.onrender.com/\"  # PowerShell\n" +
+                                "  MAX_API_BASE_URL=https://max-api-os5x.onrender.com/ ./gradlew assembleRelease  # macOS/Linux\n" +
+                                "or add MAX_API_BASE_URL=https://max-api-os5x.onrender.com/ to android/local.properties."
+                        )
+                    }
+                    if (!url.startsWith("https://")) {
+                        throw GradleException("Release API_BASE_URL must be https:// (got \"$url\"). LAN/emulator http:// URLs are debug-only.")
+                    }
                 }
             }
             // Override the debug value above for release variants only.
+            // Applied at configuration time whenever a URL is supplied, so the
+            // value in the APK is always exactly what was configured — verify
+            // with app/build/generated/source/buildConfig/release/.../BuildConfig.java
+            // after building (API_BASE_URL must be your https:// Render URL).
+            val releaseApiUrl = apiUrlFromConfig()
             if (!releaseApiUrl.isNullOrBlank()) {
                 buildConfigField("String", "API_BASE_URL", "\"${withTrailingSlash(releaseApiUrl)}\"")
             }
@@ -117,6 +134,7 @@ android {
 }
 
 dependencies {
+    implementation("com.google.errorprone:error_prone_annotations:2.36.0")
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.activity:activity-compose:1.9.0")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.2")

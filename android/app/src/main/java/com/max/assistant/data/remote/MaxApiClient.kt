@@ -1,5 +1,6 @@
 package com.max.assistant.data.remote
 
+import com.max.assistant.BuildConfig
 import com.max.assistant.data.local.TokenStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -33,27 +34,38 @@ class MaxApiClient(
     private val isNetworkAvailable: () -> Boolean = { true },
 ) {
 
+    // Logcat output is a debugging aid only: every call below is a no-op in
+    // release builds (R8 sees BuildConfig.DEBUG=false as a constant and strips
+    // the calls entirely). Only the base URL, HTTP method, path and status
+    // codes are ever logged — NEVER request bodies, headers, tokens or passwords.
+    private fun logd(msg: String) { if (BuildConfig.DEBUG) android.util.Log.d("MaxApi", msg) }
+    private fun logw(msg: String) { if (BuildConfig.DEBUG) android.util.Log.w("MaxApi", msg) }
+    private fun loge(msg: String) { if (BuildConfig.DEBUG) android.util.Log.e("MaxApi", msg) }
+
     init {
         // Fail fast in logcat when a developer runs a real phone against the
         // emulator-only loopback alias. The request would otherwise time out and
         // look like flaky network.
         val host = baseUrl.lowercase()
         if ("10.0.2.2" in host || "localhost" in host || "127.0.0.1" in host) {
-            android.util.Log.w(
-                "MaxApi",
+            logw(
                 "API_BASE_URL=$baseUrl looks emulator-only and will NOT work on a real device. " +
                     "Use the PC's LAN IP (e.g. http://192.168.1.20:3000/) or an HTTPS URL. " +
                     "See DEVELOPMENT_SETUP.md section 10.",
             )
         }
-        android.util.Log.i("MaxApi", "Backend base URL: ${baseUrl.trimEnd('/')}")
+        logd("Backend base URL: ${baseUrl.trimEnd('/')}")
     }
 
-    // Request timeouts so a slow network can never hang the app.
+    // Generous timeouts: a hosted backend on a free tier (e.g. Render) can take
+    // 30-60s+ to wake from idle on the first request ("cold start"). Shorter
+    // timeouts turn that wake-up into a misleading "Request timed out". connect
+    // still fails fast on truly unreachable hosts; the long CALL budget covers
+    // one slow wake-up but never hangs forever.
     private val http = OkHttpClient.Builder()
-        .connectTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
-        .callTimeout(35, TimeUnit.SECONDS)
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS)
+        .callTimeout(90, TimeUnit.SECONDS)
         .build()
 
     private val json = "application/json".toMediaType()
@@ -75,7 +87,10 @@ class MaxApiClient(
     }
 
     private fun once(method: String, path: String, body: JSONObject?): JSONObject {
+        // baseUrl has no trailing slash (enforced by the Gradle config) and every
+        // path starts with "/", so this can never produce "//api/..." doubles.
         val url = baseUrl.trimEnd('/') + path
+        logd("-> $method $url")
         val builder = Request.Builder()
             .url(url)
             .header("X-MAX-Client", "android")
@@ -91,40 +106,42 @@ class MaxApiClient(
                 val serverMsg = obj.optJSONObject("error")?.optString("message")?.takeIf { it.isNotBlank() }
                 // Backend 4xx messages are already user-friendly: surface them verbatim
                 // so sign-in/sign-up show the real cause (e.g. wrong password, email taken).
-                android.util.Log.e("MaxApi", "backend error $method $url -> HTTP ${res.code}: ${serverMsg ?: "(no message)"}")
+                loge("backend error $method $url -> HTTP ${res.code}: ${serverMsg ?: "(no message)"}")
                 throw ApiException(FriendlyErrors.forStatus(res.code, serverMsg), res.code)
             }
         } catch (e: ApiException) {
             throw e
         } catch (e: SocketTimeoutException) {
-            android.util.Log.e("MaxApi", "timeout $method $url: ${e.javaClass.simpleName}: ${e.message}")
+            loge("timeout $method $url: ${e.javaClass.simpleName}: ${e.message}")
             throw ApiException(FriendlyErrors.TIMEOUT, 0)
         } catch (e: IOException) {
             // IOException covers DNS failures, refused connections, SSL errors and
             // cleartext blocks. Log the real cause; only claim "offline" when the
             // device genuinely has no network.
-            android.util.Log.e("MaxApi", "network failure $method $url: ${e.javaClass.simpleName}: ${e.message}")
+            loge("network failure $method $url: ${e.javaClass.simpleName}: ${e.message}")
             if (e is UnknownHostException) {
-                android.util.Log.e("MaxApi", "UnknownHost: check API_BASE_URL ($baseUrl) and DNS.")
+                loge("UnknownHost: check API_BASE_URL ($baseUrl) and DNS.")
             }
             if (!isNetworkAvailable()) throw ApiException(FriendlyErrors.OFFLINE, 0)
             throw ApiException(FriendlyErrors.SERVER_UNREACHABLE, 0)
         } catch (e: Exception) {
             // Misconfiguration (malformed URL, JSON misuse) must never masquerade as offline.
-            android.util.Log.e("MaxApi", "unexpected failure $method $url: ${e.javaClass.simpleName}: ${e.message}")
+            loge("unexpected failure $method $url: ${e.javaClass.simpleName}: ${e.message}")
             throw ApiException(FriendlyErrors.GENERIC, -1)
         }
     }
 
     suspend fun login(email: String, password: String) {
         val res = request("POST", "/api/auth/login", JSONObject().put("email", email).put("password", password))
-        tokens.token = res.optString("token").ifBlank { throw ApiException(FriendlyErrors.GENERIC) }
+        tokens.token = res.optString("token").ifBlank { throw ApiException(FriendlyErrors.NO_SESSION) }
         refreshProfile()
     }
 
+    // Same endpoint contract as login: the backend creates the account, starts the
+    // session, and returns the token because X-MAX-Client: android is set.
     suspend fun signUp(name: String, email: String, password: String) {
         val res = request("POST", "/api/auth/signup", JSONObject().put("email", email).put("password", password).put("fullName", name))
-        tokens.token = res.optString("token").ifBlank { throw ApiException(FriendlyErrors.GENERIC) }
+        tokens.token = res.optString("token").ifBlank { throw ApiException(FriendlyErrors.NO_SESSION) }
         refreshProfile()
     }
 
