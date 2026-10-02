@@ -26,7 +26,9 @@ jobs:
       - run: npm ci
       - run: npx next typegen
       - run: npm exec tsc -- --noEmit
-      - run: npx vitest run tests/commands.test.ts tests/ai.test.ts
+      # Unit tests only. The e2e suite is separate below because it needs a
+      # running server and a migrated database.
+      - run: npx vitest run tests/commands.test.ts tests/tools.test.ts tests/ai.test.ts
       - run: npx drizzle-kit push --force
       - run: npm run build
       - name: End-to-end API tests (data isolation, 401, 429, ...)
@@ -46,6 +48,8 @@ jobs:
       # Production secrets are NOT used here: the debug APK needs none.
       - name: Unit tests
         run: gradle -p android testDebugUnitTest
+      - name: Android lint
+        run: gradle -p android lintDebug
       - name: Build debug APK
         run: gradle -p android assembleDebug
       - uses: actions/upload-artifact@v4

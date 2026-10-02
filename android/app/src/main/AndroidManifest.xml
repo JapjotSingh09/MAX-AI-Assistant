@@ -11,8 +11,33 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.READ_CONTACTS" />
     <uses-permission android:name="android.permission.CALL_PHONE" />
+    <!-- Android 13+: needed to show reminders and the "listening" notice. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Alarms via the AlarmClock intent (the Clock app sets them, not MAX). -->
     <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
+
+    <!--
+      Foreground service so "Hey MAX" can listen with the app in the background or
+      the screen off. FOREGROUND_SERVICE is the base permission;
+      FOREGROUND_SERVICE_MICROPHONE is the Android 14+ per-type permission.
+      Both are required: declaring the microphone type without them makes
+      startForeground() throw.
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+
+    <!--
+      DELIBERATELY NOT REQUESTED - full reasoning in ARCHITECTURE.md:
+        SCHEDULE_EXACT_ALARM / USE_EXACT_ALARM - special access, Play-restricted,
+          and unnecessary: reminders use setAndAllowWhileIdle(), which needs no
+          permission and still fires in Doze. The trade-off (possible delay of a
+          few minutes) is accepted and documented.
+        READ_CALENDAR - too sensitive for "what's on my calendar"; MAX opens the
+          calendar app instead.
+        SYSTEM_ALERT_WINDOW / BIND_ACCESSIBILITY_SERVICE - not needed, and the
+          kind of always-on access users (rightly) distrust.
+        READ_SMS / READ_CALL_LOG - MAX never reads existing messages or calls.
+    -->
 
     <!-- Needed so we can see/launch installed apps on Android 11+ (package visibility). -->
     <queries>
@@ -20,14 +45,29 @@
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
         </intent>
+        <!-- Package visibility for the other apps MAX opens on request. -->
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="https" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SENDTO" />
+            <data android:scheme="smsto" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.DIAL" />
+            <data android:scheme="tel" />
+        </intent>
     </queries>
 
     <uses-feature android:name="android.hardware.camera.flash" android:required="false" />
     <uses-feature android:name="android.hardware.telephony" android:required="false" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
 
     <application
         android:name=".MaxApplication"
         android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:icon="@android:drawable/sym_def_app_icon"
         android:label="@string/app_name"
         android:networkSecurityConfig="@xml/network_security_config"
@@ -37,12 +77,25 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:launchMode="singleTop"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!--
+          "Hey MAX" listening. foregroundServiceType="microphone" is REQUIRED:
+          without it the system refuses microphone access from a service, and on
+          Android 14+ it is checked against FOREGROUND_SERVICE_MICROPHONE.
+          Only ever started from Settings or the app's own toggle, never from
+          the background - that is a hard Android restriction, not a choice.
+        -->
+        <service
+            android:name=".services.WakeWordService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
 
         <!-- Optional: the user must enable notification access manually in Android Settings. -->
         <service
@@ -54,5 +107,15 @@
                 <action android:name="android.service.notification.NotificationListenerService" />
             </intent-filter>
         </service>
+
+        <!--
+          Reminders. setAndAllowWhileIdle needs NO permission, so MAX asks for
+          none. RECEIVE_BOOT_COMPLETED is intentionally NOT declared: a reboot
+          clears pending alarms, and rather than take another permission MAX
+          documents the limitation and re-schedules on the next app start.
+        -->
+        <receiver
+            android:name=".services.ReminderReceiver"
+            android:exported="false" />
     </application>
 </manifest>

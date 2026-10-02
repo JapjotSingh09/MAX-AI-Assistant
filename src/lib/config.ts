@@ -31,6 +31,10 @@ export const config = {
     fallbackApiKey: process.env.AI_FALLBACK_API_KEY || "",
     timeoutMs: int("AI_TIMEOUT_MS", 20000),
     maxRetries: int("AI_MAX_RETRIES", 2),
+    // How many extra model round-trips a single request may spend on tool
+    // calling. Each round costs money, so this is a hard ceiling rather than
+    // "keep going until the model stops asking".
+    maxToolRounds: int("AI_MAX_TOOL_ROUNDS", 2),
   },
 
   email: {

@@ -12,7 +12,7 @@ MAX is a futuristic personal AI assistant. You talk or type; MAX understands, an
 | Part | Where | Status |
 | --- | --- | --- |
 | **Backend API + web console** (Next.js, PostgreSQL, Drizzle) | `src/` | ✅ Built, type-checked, production-built, unit + end-to-end tested |
-| **Android app** (Kotlin, Compose, Material 3) | `android/` | ⚠️ Source written, **not compiled or run** — the authoring environment had no JDK/Android SDK. Build it with the steps in `DEVELOPMENT_SETUP.md` and expect to fix small compile errors on first sync. |
+| **Android app** (Kotlin, Compose, Material 3) | `android/` | ✅ Compiles (`assembleDebug`/`assembleRelease`), 28 unit tests passing. **Not yet run on a physical device** — see ARCHITECTURE.md §9 |
 | **Supabase variant** (SQL migration with RLS) | `supabase/` | ✅ SQL written; not executed against a live Supabase project |
 | Load test | `loadtest/k6-load.js`, `docs/LOAD_TESTING.md` | Plan + script; **has not been run** |
 | CI | `.github/workflows/ci.yml` | Written; not yet run on GitHub |
@@ -41,9 +41,35 @@ MAX is a futuristic personal AI assistant. You talk or type; MAX understands, an
                          OpenRouter · custom
 ```
 
-**Local first, cloud when needed.** `"Open YouTube"`, `"Turn flashlight on"`, `"Set timer for 10 minutes"` are
-recognised by a rule-based parser (on the device and on the server) — instant, free, offline-capable.
+**Local first, cloud when needed.** `"Open YouTube"`, `"Turn flashlight on"`, `"Set timer for 10 minutes"`, `"Create a note"` are
+recognised by a rule-based parser (on the device **and** on the server) — instant, free, offline-capable.
 Questions, ambiguity and conversation go to the cloud AI through the backend.
+
+### The tool registry
+
+Everything MAX can do is ONE entry in a registry — `src/lib/tools/registry.ts` (30 tools). Each entry declares a
+name, a description for the AI, a strict zod schema, a confirmation policy, and whether it runs on the device
+or in the backend. That single list drives the AI's tool menu, the local command parser, the validation layer
+and the Android executor. There is no second list to keep in sync, and nothing the model says is ever executed
+without passing that same validation.
+
+```
+User input
+   ↓  normalise; strip "hey max" / "please"
+Local parser (device + server, same rules)  ──→  handled offline, no AI call
+   ↓ not recognised
+Backend: AI sees the registry as real function definitions
+   ↓ model calls a tool
+validateIntent()  ← closed whitelist + strict schema + confirmation policy
+   ↓
+device tool → confirmation card → permission check → AndroidActionExecutor → REAL result
+server tool → run against this user's own rows → reply
+   ↓
+reply → activity log → TTS
+```
+
+Calls, messages, note deletion and whole-store deletes **always** require a confirmation tap, even if the model
+claims otherwise. No shell commands, arbitrary code or model-supplied Intent URIs are ever executed.
 
 ### Command pipeline
 
@@ -54,11 +80,16 @@ text/voice → normalize → local parser ─┐
                                                 → real result → MAX reply → activity log
 ```
 
-The AI only *suggests* `{ "action": "OPEN_APP", "parameters": {...} }`. The action must be in the whitelist
-(`OPEN_APP, CALL_CONTACT, OPEN_DIALER, SEND_SMS, OPEN_WHATSAPP, OPEN_MAPS, NAVIGATE, SET_ALARM, SET_TIMER,
-CREATE_REMINDER, OPEN_CAMERA, OPEN_BROWSER, ADJUST_VOLUME, TOGGLE_FLASHLIGHT, OPEN_SETTINGS, SHOW_NOTIFICATIONS`)
-and its parameters must pass a strict schema, otherwise it is **rejected**. Calls and messages **always** require
-confirmation, even if the AI says otherwise. No shell commands or code are ever executed.
+The AI only *suggests* a tool call. The tool must be in the registry whitelist and its parameters must pass a
+strict schema, otherwise it is **rejected and logged as `REJECTED`**. Calls, messages and deletions **always**
+require confirmation, even if the AI says otherwise. No shell commands or code are ever executed.
+
+## Documentation
+
+* **[ARCHITECTURE.md](ARCHITECTURE.md)** — full architecture: frontend, Android app, backend, database,
+  AI provider, authentication, API flow, voice flow, security model, every Android permission and its reason,
+  and every Android limitation with the closest legitimate workaround.
+* **[DEVELOPMENT_SETUP.md](DEVELOPMENT_SETUP.md)** — local setup and the signed-APK build steps.
 
 ## Tech stack
 
@@ -134,6 +165,7 @@ email constraint server-side. Emails go through `EMAIL_PROVIDER`:
 | `GET/POST/DELETE /api/activity` | Activity feed (cursor paginated) / log a device-side action |
 | `GET/POST /api/automations`, `PATCH/DELETE /api/automations/:id` | Automations |
 | `GET/POST/DELETE /api/memories`, `PATCH/DELETE /api/memories/:id` | Memory |
+| `GET /api/conversations?q=`, `GET/PATCH/DELETE /api/conversations/:id` | Search, and one conversation: read / rename / delete |
 | `GET /api/usage`, `POST /api/devices` | Usage, device registration |
 | `GET /api/health` (alias `/health`) | Health |
 
@@ -163,9 +195,21 @@ The two common causes are:
 
 ## Android permissions
 
-Requested only when needed, with an explanation first: `RECORD_AUDIO` (tap-to-talk only), `READ_CONTACTS` ("Call Dad"),
-`CALL_PHONE` (real calls after confirmation; otherwise the dialer opens), `POST_NOTIFICATIONS`, `SET_ALARM`.
-Optional, user-enabled in Android Settings: Notification access, Accessibility (never used for spying/credentials), Overlay.
+Requested only when needed, with an explanation shown first. Full table with reasons in
+[ARCHITECTURE.md §6](ARCHITECTURE.md#6-android-permissions-and-why-each-one-exists).
+
+| Permission | Why |
+| --- | --- |
+| `RECORD_AUDIO` | Push-to-talk voice, and the optional "Hey MAX" service. Opens **only** while listening. |
+| `READ_CONTACTS` | Find a number by name for "Call Dad". Never uploaded. |
+| `CALL_PHONE` | Place a real call after confirmation; without it the dialer opens instead. |
+| `POST_NOTIFICATIONS` | Android 13+: reminders and the persistent "listening" notice. |
+| `FOREGROUND_SERVICE` + `FOREGROUND_SERVICE_MICROPHONE` | Required for "Hey MAX" to work with the screen off. |
+| `SET_ALARM` (com.android.alarm) | Hands alarms to the system Clock app. |
+
+Optional, enabled by the user in Android Settings: notification access.
+**Deliberately not requested:** `SCHEDULE_EXACT_ALARM`, `READ_CALENDAR`, `READ_SMS`, `READ_CALL_LOG`,
+`SYSTEM_ALERT_WINDOW`, any accessibility service — see ARCHITECTURE.md for the reasoning on each.
 
 ## Setup, build, test
 
@@ -183,9 +227,10 @@ npm run build && npm start  # or: npm run dev
 Tests:
 
 ```bash
-npx vitest run tests/commands.test.ts tests/ai.test.ts         # unit tests (no server needed)
-E2E_BASE_URL=http://localhost:3000 npx vitest run tests/e2e.test.ts   # needs a running server + DB
-gradle -p android testDebugUnitTest                              # Android unit tests
+npx vitest run tests/commands.test.ts tests/tools.test.ts tests/ai.test.ts   # unit tests (no server needed)
+E2E_BASE_URL=http://localhost:3000 npx vitest run tests/e2e.test.ts          # needs a running server + DB
+cd android && ./gradlew testDebugUnitTest                                    # Android unit tests
+cd android && ./gradlew assembleDebug                                        # debug APK
 ```
 
 ## Environment variables
@@ -203,18 +248,26 @@ measured with `docs/LOAD_TESTING.md` first. Use a connection pooler (e.g. Supaba
 
 ## Known limitations
 
-* The Android app was **not compiled** in the authoring environment. Run the build and fix any first-sync issues.
-* Android screens implemented: Login/Sign-up, Home (animated orb), Assistant (chat, voice, confirmation cards), Settings (permissions).
-  **Not yet on Android:** Automations/Activity/Memory/Notification Center screens, onboarding, Driving Mode, floating bubble
-  (`SYSTEM_ALERT_WINDOW`), accessibility service, Room/DataStore, WorkManager automation runner, wake word. They exist
-  (except bubble/accessibility/wake word) in the web console and backend.
-* WhatsApp and SMS cannot be sent silently via public APIs: MAX opens the composer with the text filled in and reports
-  **"prepared — not sent"**. Reminders open the calendar's new-event screen (Android has no public reminders API).
-  "Do Not Disturb at 10 PM" needs Notification Policy access and is not offered as an automation.
-* Android blocks background microphone use and restricts background starts; v1 is tap-to-talk only.
-* The web console cannot control a phone: browser actions are limited (open site/maps, dialer/SMS links) and everything else
-  reports "unsupported" honestly. Automations created on the web run on the Android app.
-* The Supabase Edge Function port is documented, not implemented. No token streaming. No payment/plan system (everyone is "Free").
+The complete list, with the exact Android rule behind each one, is in
+**[ARCHITECTURE.md §8](ARCHITECTURE.md#8-android-limitations-and-what-max-does-instead)**. The short version:
+
+* **"Always listening" is not claimed.** MAX ships a *duty-cycled* microphone foreground service for "Hey MAX":
+  short listening windows separated by idle gaps. It is a real, working implementation of the closest thing
+  Android allows a third-party app, and it costs battery while it is on.
+* SMS and WhatsApp cannot be sent silently through public APIs, so MAX opens the composer with the text filled in
+  and reports **"prepared — not sent"**.
+* Bluetooth cannot be switched by a normal app, so `SET_BLUETOOTH` opens Bluetooth settings and says so.
+* Calendar events cannot be read silently, so `READ_CALENDAR` opens the calendar app instead.
+* Reminders use `setAndAllowWhileIdle` rather than `SCHEDULE_EXACT_ALARM`, so a reminder can arrive a few minutes
+  late — but it needs no special-access permission and still fires with the screen off.
+* The Android app has been compiled and unit-tested, but not yet run on a physical device.
+* Android screens implemented: Login/Sign-up, Home (orb + quick actions), Assistant (chat, voice, confirmation),
+  History (list / search / rename / delete), Settings (voice, wake word, permissions).
+  **Not yet on Android:** Automations, Activity and Memory *screens* (all three APIs work and are reachable by
+  voice/command), onboarding, Driving Mode, floating bubble (`SYSTEM_ALERT_WINDOW`), WorkManager automation runner.
+* The web console cannot control a phone: browser actions are limited (open site/maps, dialer/SMS links) and
+  everything else reports "unsupported" honestly.
+* The Supabase Edge Function port is documented, not implemented. No token streaming. No payment system.
 
 ## Roadmap
 

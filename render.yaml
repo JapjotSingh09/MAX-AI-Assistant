@@ -36,6 +36,9 @@ services:
         value: 20000
       - key: AI_MAX_RETRIES
         value: 2
+      # Extra model round-trips allowed per request for tool calling.
+      - key: AI_MAX_TOOL_ROUNDS
+        value: 2
       - key: EMAIL_PROVIDER
         value: smtp
       - key: SMTP_HOST

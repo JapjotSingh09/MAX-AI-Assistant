@@ -51,6 +51,110 @@ describe("CommandParser (local-first)", () => {
   });
 });
 
+// The "Hey MAX, remind me tomorrow at 9 AM to call dad" example from the spec.
+// Speech recognition adds noise, so the local parser must tolerate the wake
+// phrase, the politeness fillers and the trailing punctuation.
+describe("CommandParser - spoken-style phrasing", () => {
+  it("strips the wake phrase and still finds the reminder", () => {
+    expect(intentOf("Hey MAX, remind me tomorrow at 9 AM to call dad")?.action).toBe("CREATE_REMINDER");
+  });
+  it("understands 'tomorrow at 9' as 09:00 and 'at 7 pm' as 19:00", () => {
+    expect(intentOf("set an alarm for tomorrow at 9")?.parameters).toEqual({ hour: 9, minute: 0 });
+    expect(intentOf("remind me at 7 pm to take out the bins")?.parameters?.when).toBeTruthy();
+    expect(intentOf("set an alarm for 7 pm")?.parameters).toEqual({ hour: 19, minute: 0 });
+  });
+  it("understands spoken durations like ninety and 'one and a half'", () => {
+    expect(intentOf("set a timer for ninety minutes")?.parameters).toEqual({ seconds: 5400 });
+    expect(intentOf("set a timer for one and a half hours")?.parameters).toEqual({ seconds: 5400 });
+    expect(intentOf("set a timer for 10 minutes")?.parameters).toEqual({ seconds: 600 });
+  });
+  it("splits a spoken reminder into what and when", () => {
+    // "Hey MAX, remind me tomorrow at 9 AM to call dad"
+    const r = intentOf("Hey MAX, remind me tomorrow at 9 AM to call dad");
+    expect(r?.action).toBe("CREATE_REMINDER");
+    expect(r?.parameters.text).toBe("to call dad");
+    expect(r?.parameters.when).toBe("tomorrow at 9 am");
+  });
+});
+
+describe("CommandParser - notes and tasks", () => {
+  it("creates notes from several phrasings", () => {
+    expect(intentOf("create a note saying buy milk")).toMatchObject({
+      action: "CREATE_NOTE",
+      parameters: { content: "buy milk" },
+    });
+    expect(intentOf("note: parking spot is B4")?.action).toBe("CREATE_NOTE");
+    expect(intentOf("write down the wifi password")?.action).toBe("CREATE_NOTE");
+  });
+  it("lists and deletes notes, with deletion always confirmed", () => {
+    expect(intentOf("show my notes")?.action).toBe("LIST_NOTES");
+    expect(intentOf("what are my notes")?.action).toBe("LIST_NOTES");
+    const del = intentOf("delete the note about milk");
+    expect(del).toMatchObject({ action: "DELETE_NOTE", parameters: { query: "milk" }, requiresConfirmation: true });
+  });
+  it("creates tasks, pulling the due date out of the title", () => {
+    const task = intentOf("add a task to submit the assignment tomorrow");
+    expect(task?.action).toBe("CREATE_TASK");
+    expect(task?.parameters.title).toBe("submit the assignment");
+    expect(task?.parameters.due).toBe("tomorrow");
+    expect(intentOf("add this to my todo list book flights")?.action).toBe("CREATE_TASK");
+  });
+  it("lists and completes tasks", () => {
+    expect(intentOf("show my tasks")?.action).toBe("LIST_TASKS");
+    expect(intentOf("mark the task about milk as done")?.action).toBe("COMPLETE_TASK");
+  });
+});
+
+describe("CommandParser - search, weather, calendar, bluetooth, share", () => {
+  it("routes a plain 'search for X' to the web, not to maps", () => {
+    expect(intentOf("search for train times to Delhi")).toMatchObject({ action: "WEB_SEARCH", parameters: { query: "train times to Delhi" } });
+    // The maps rules still win for local searches.
+    expect(intentOf("search for restaurants near me")?.action).toBe("OPEN_MAPS");
+    expect(intentOf("search for pizza on maps")?.action).toBe("OPEN_MAPS");
+  });
+  it("handles weather with and without a location", () => {
+    expect(intentOf("what's the weather in Tokyo")?.parameters).toEqual({ location: "Tokyo" });
+    expect(intentOf("show weather")?.action).toBe("OPEN_WEATHER");
+  });
+  it("opens the calendar", () => {
+    expect(intentOf("what's on my calendar")?.action).toBe("READ_CALENDAR");
+    expect(intentOf("open my agenda")?.action).toBe("READ_CALENDAR");
+  });
+  it("maps bluetooth requests onto the honest SET_BLUETOOTH tool", () => {
+    expect(intentOf("turn on bluetooth")?.parameters).toEqual({ state: "on" });
+    expect(intentOf("turn off bluetooth")?.parameters).toEqual({ state: "off" });
+    // "open bluetooth settings" must still reach the settings tool.
+    expect(intentOf("open bluetooth settings")?.action).toBe("OPEN_SETTINGS");
+  });
+  it("shares text via the Android share sheet", () => {
+    expect(intentOf("share my location with the team")?.parameters).toEqual({ text: "my location with the team" });
+  });
+});
+
+describe("CommandParser - destructive commands need confirmation", () => {
+  it("routes 'clear conversations' to the destructive server tool", () => {
+    expect(intentOf("clear all my conversations")).toMatchObject({
+      action: "CLEAR_CONVERSATIONS",
+      requiresConfirmation: true,
+    });
+  });
+});
+
+describe("CommandParser - memory read-back and forgetting", () => {
+  it("lists memories", () => {
+    expect(parseCommand("what did I ask you to remember?")).toEqual({ kind: "memory_list" });
+    expect(parseCommand("what do you remember about me?")).toEqual({ kind: "memory_list" });
+    expect(parseCommand("show my memories")).toEqual({ kind: "memory_list" });
+  });
+  it("forgets a specific memory", () => {
+    expect(parseCommand("forget that my exam is on Monday")).toEqual({ kind: "memory_forget", query: "my exam is on Monday" });
+  });
+  it("does not treat an ordinary sentence that mentions forgetting as a delete", () => {
+    // "forget" in the middle of a request must reach the AI, not delete rows.
+    expect(parseCommand("write an email to my boss and forget nothing")).toBeNull();
+  });
+});
+
 describe("CommandIntent validation (closed whitelist)", () => {
   it("accepts a valid action", () => {
     const v = validateIntent({ action: "SET_ALARM", parameters: { hour: 7, minute: 0 } });

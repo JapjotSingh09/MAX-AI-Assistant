@@ -18,6 +18,15 @@ class NavigationAction(private val context: Context) {
         return launch(Intent(Intent.ACTION_VIEW, Uri.parse(target)), "Opened your browser.")
     }
 
+    /** A plain web search. Kept separate so the label and the intent differ. */
+    fun webSearch(query: String): ActionResult {
+        if (query.isBlank()) return ActionResult.Failed("What should I search for?")
+        return launch(
+            Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com/search?q=${Uri.encode(query)}")),
+            "Searched the web for \"$query\"."
+        )
+    }
+
     private fun launch(intent: Intent, okMessage: String): ActionResult = try {
         context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         ActionResult.Completed(okMessage)

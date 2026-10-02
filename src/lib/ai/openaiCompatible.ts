@@ -1,4 +1,4 @@
-import { AIProviderError, type AIProvider, type AIRequest, type AIResponse } from "@/lib/ai/types";
+import { AIProviderError, type AIToolCall, type AIProvider, type AIRequest, type AIResponse } from "@/lib/ai/types";
 
 export type OpenAICompatibleOptions = {
   name: string;
@@ -44,15 +44,22 @@ export class OpenAICompatibleProvider implements AIProvider {
     const started = Date.now();
     let res: Response;
     try {
+      // Only send `tools` when the caller asked for them. Some providers reject
+      // an empty or unknown tool set, so we never send one we did not build.
+      const body: Record<string, unknown> = {
+        model: this.o.model,
+        messages: request.messages,
+        max_tokens: request.maxTokens ?? 600,
+        temperature: request.temperature ?? 0.4,
+      };
+      if (request.tools?.length) {
+        body.tools = request.tools;
+        body.tool_choice = "auto";
+      }
       res = await doFetch(`${this.o.baseUrl.replace(/\/$/, "")}/chat/completions`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.o.apiKey}` },
-        body: JSON.stringify({
-          model: this.o.model,
-          messages: request.messages,
-          max_tokens: request.maxTokens ?? 600,
-          temperature: request.temperature ?? 0.4,
-        }),
+        body: JSON.stringify(body),
         signal: AbortSignal.timeout(this.o.timeoutMs),
       });
     } catch (err) {
@@ -66,17 +73,64 @@ export class OpenAICompatibleProvider implements AIProvider {
     if (!res.ok) throw new AIProviderError("bad request", false, "bad_response");
 
     const data = (await res.json().catch(() => null)) as {
-      choices?: { message?: { content?: string } }[];
+      choices?: {
+        message?: { content?: string | null; tool_calls?: RawToolCall[] };
+        finish_reason?: string | null;
+      }[];
       usage?: { total_tokens?: number };
     } | null;
-    const content = data?.choices?.[0]?.message?.content;
-    if (typeof content !== "string" || !content.trim()) throw new AIProviderError("empty", false, "bad_response");
+
+    const message = data?.choices?.[0]?.message;
+    const toolCalls = parseToolCalls(message?.tool_calls);
+    // A tool call legitimately has no text content, so "empty" is only an error
+    // when the model returned neither words nor a tool.
+    const content = typeof message?.content === "string" ? message.content : "";
+    if (!content.trim() && toolCalls.length === 0) throw new AIProviderError("empty", false, "bad_response");
+
     return {
       content,
       provider: this.name,
       model: this.model,
       tokensUsed: data?.usage?.total_tokens ?? 0,
       latencyMs: Date.now() - started,
+      ...(toolCalls.length ? { toolCalls } : {}),
     };
   }
+}
+
+// Wire shape of one `tool_calls[]` entry. Kept private to this file.
+type RawToolCall = {
+  id?: unknown;
+  type?: unknown;
+  function?: { name?: unknown; arguments?: unknown };
+};
+
+/**
+ * Model output is UNTRUSTED. `function.arguments` is a JSON *string* that the
+ * model generated, so it is parsed defensively: a malformed or non-object
+ * payload becomes an empty object, and only real strings become tool names.
+ * Nothing here executes anything - the name still has to survive
+ * `validateIntent()` against the closed whitelist before it can run.
+ */
+export function parseToolCalls(raw: unknown): AIToolCall[] {
+  if (!Array.isArray(raw)) return [];
+  const out: AIToolCall[] = [];
+  for (const item of raw) {
+    const name = (item as RawToolCall)?.function?.name;
+    if (typeof name !== "string" || !name) continue;
+    let args: Record<string, unknown> = {};
+    const argText = (item as RawToolCall)?.function?.arguments;
+    if (typeof argText === "string" && argText.trim()) {
+      try {
+        const parsed = JSON.parse(argText);
+        // Arrays are objects in JS but are never a valid parameter bag.
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) args = parsed as Record<string, unknown>;
+      } catch {
+        /* malformed JSON from the model: fall through with no arguments */
+      }
+    }
+    const id = (item as RawToolCall)?.id;
+    out.push({ name, arguments: args, id: typeof id === "string" && id ? id : `call_${out.length}` });
+  }
+  return out;
 }

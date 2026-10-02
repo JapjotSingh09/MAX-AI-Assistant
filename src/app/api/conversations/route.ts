@@ -1,21 +1,26 @@
 import { z } from "zod";
-import { and, desc, eq, lt, or } from "drizzle-orm";
+import { and, desc, eq, ilike, lt, or } from "drizzle-orm";
 import { db } from "@/db";
 import { conversations } from "@/db/schema";
 import { api, decodeCursor, encodeCursor, json, pageSize, readJson } from "@/lib/http";
 import { logActivity } from "@/lib/activity";
+import { escapeLike } from "@/lib/assistant";
 
 export const dynamic = "force-dynamic";
 
 export const GET = api({ auth: true }, async ({ req, user }) => {
   const limit = pageSize(req, 20);
   const cursor = decodeCursor(new URL(req.url).searchParams.get("cursor"));
+  // Optional free-text search over the conversation title. Scoped to the user,
+  // so a search can never surface someone else's history.
+  const q = (new URL(req.url).searchParams.get("q") ?? "").trim().slice(0, 100);
   const rows = await db
     .select()
     .from(conversations)
     .where(
       and(
         eq(conversations.userId, user.id),
+        q ? ilike(conversations.title, `%${escapeLike(q)}%`) : undefined,
         cursor ? or(lt(conversations.updatedAt, cursor.date), and(eq(conversations.updatedAt, cursor.date), lt(conversations.id, cursor.id))) : undefined,
       ),
     )

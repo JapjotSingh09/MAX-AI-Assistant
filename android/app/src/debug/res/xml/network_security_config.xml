@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  DEBUG-ONLY network policy.
+
+  Cleartext is allowed here, and only here, so a debug build can reach a
+  development backend on the PC's LAN (http://192.168.x.x:3000/) or the
+  emulator alias (http://10.0.2.2:3000/). The RELEASE variant uses the main
+  resource, which denies cleartext entirely.
+
+  This file lives in src/debug/, so it is not present in a release APK at all.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

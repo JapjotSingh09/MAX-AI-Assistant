@@ -29,7 +29,7 @@ import androidx.compose.ui.unit.dp
 import com.max.assistant.BuildConfig
 import com.max.assistant.data.remote.ApiException
 import com.max.assistant.data.remote.MaxApiClient
-import com.max.assistant.services.VoiceState
+import com.max.assistant.speech.VoiceState
 import com.max.assistant.ui.components.MaxOrb
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
