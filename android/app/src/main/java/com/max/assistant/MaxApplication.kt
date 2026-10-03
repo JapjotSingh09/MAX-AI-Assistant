@@ -5,6 +5,8 @@ import android.content.Context
 import com.max.assistant.actions.AndroidActionExecutor
 import com.max.assistant.ai.AIProvider
 import com.max.assistant.ai.BackendAIProvider
+import com.max.assistant.assistant.LatencyLog
+import com.max.assistant.assistant.nlu.Lexicon
 import com.max.assistant.data.local.TokenStore
 import com.max.assistant.data.remote.MaxApiClient
 import com.max.assistant.permissions.PermissionManager
@@ -35,12 +37,39 @@ class AppContainer(private val context: Context) {
     val executor = AndroidActionExecutor(context, this)
     val ai: AIProvider = BackendAIProvider(api)
 
-    /** Called once when the process starts. Cheap, safe to repeat. */
+    /**
+     * Called ONCE when the process starts.
+     *
+     * WHY THIS EXISTS - the first command used to be noticeably slower than the
+     * rest, and the cause was that everything needed for a reply was created
+     * lazily, on the first command:
+     *
+     *  - `SpeechOutput.init()` boots the TextToSpeech engine. Doing it here
+     *    means MAX can speak the first reply instead of swallowing it while the
+     *    engine is still loading.
+     *  - `SpeechRecognizer` is expensive to construct. [SpeechInput] pre-creates
+     *    it here so the first tap on the mic does not pay for construction.
+     *  - The intent lexicon compiles ONE regex covering the whole vocabulary.
+     *    Built here rather than on the first spoken command.
+     *
+     * It is deliberately NOT "load everything": no network calls, no database
+     * reads, no package scanning. Those stay lazy, because doing them at
+     * startup would make the app slower to open and would drain battery for
+     * work most sessions never need.
+     */
     fun warmUp() {
         AssistantNotifications.ensureChannels(context)
         // Boot the TTS engine now, so the first reply is not swallowed while
         // the engine is still starting.
         speechOutput.init()
+        // Build the speech recogniser up front: construction is the expensive
+        // part, and it is pure CPU with no permission needed yet.
+        speechInput.prewarm()
+        // Compile the command vocabulary's regexes while the splash is up.
+        Lexicon.features("warm up")
+        // Record that MAX is ready, so first-command latency can be measured
+        // against a real baseline instead of guessed at.
+        LatencyLog.markActivated()
     }
 
     companion object {

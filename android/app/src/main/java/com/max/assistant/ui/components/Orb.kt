@@ -26,12 +26,17 @@ import com.max.assistant.ui.theme.MaxGold
 /**
  * The MAX orb.
  *
- * It is the app's single most important piece of feedback, so it is driven by
- * THREE inputs rather than one:
+ * The app's single most important piece of feedback, so it is driven by THREE
+ * inputs rather than one:
  *  - [state] picks the colour and the base animation speed;
  *  - [amplitude] (microphone loudness) scales the glow while listening, so the
  *    orb visibly reacts to the user rather than just spinning;
  *  - [thinking] spins a third, faster ring while MAX waits for the AI.
+ *
+ * ANIMATION IS MEANINGFUL, NOT DECORATIVE. Each state looks different for a
+ * reason the user can feel: idle breathes slowly and costs almost nothing,
+ * listening pulses with the microphone, thinking shows a fast ring, speaking
+ * pulses green, and an error turns red rather than quietly looking normal.
  *
  * Drawing is a plain Canvas with no shaders or bitmaps: it stays at 60fps on
  * the low-end hardware an assistant has to run on, and costs nothing when idle
@@ -49,13 +54,25 @@ fun MaxOrb(
     val transition = rememberInfiniteTransition(label = "orb")
     val active = state == VoiceState.LISTENING || state == VoiceState.SPEAKING
 
+    // The pulse DURATION carries the meaning: idle is a slow 3.2s breath,
+    // listening is a quick 900ms pulse the user can see at a glance, and
+    // speaking is a 700ms pulse. A single shared animation would waste the
+    // clearest signal the orb has.
+    val durationMs = when (state) {
+        VoiceState.LISTENING -> 900
+        VoiceState.SPEAKING -> 700
+        VoiceState.PROCESSING, VoiceState.EXECUTING -> 1400
+        VoiceState.WAKE_DETECTED -> 1000
+        else -> 3200
+    }
+
     // Idle breathes slowly; speaking pulses; thinking spins a distinct ring.
     val pulse by transition.animateFloat(
         initialValue = 0.94f,
         targetValue = 1.06f,
         label = "pulse",
         animationSpec = infiniteRepeatable(
-            tween(if (state == VoiceState.SPEAKING) 700 else 3200, easing = LinearEasing),
+            tween(durationMs, easing = LinearEasing),
             RepeatMode.Reverse
         )
     )
@@ -63,14 +80,32 @@ fun MaxOrb(
         initialValue = 0f,
         targetValue = 360f,
         label = "spin",
-        animationSpec = infiniteRepeatable(tween(if (thinking) 1600 else 14000, easing = LinearEasing))
+        animationSpec = infiniteRepeatable(
+            tween(
+                // Working states spin faster, so "MAX is busy" reads instantly.
+                when {
+                    thinking -> 1200
+                    state == VoiceState.PROCESSING || state == VoiceState.EXECUTING -> 2400
+                    else -> 14000
+                },
+                easing = LinearEasing
+            )
+        )
     )
 
     val listening = state == VoiceState.LISTENING
     val speaking = state == VoiceState.SPEAKING
+
+    // Colour is the fastest state cue there is, so it is chosen first: red for
+    // an error (which must never look like normal idle), green while speaking,
+    // blue while the microphone is open, gold otherwise.
     val core = when {
-        listening -> listOf(Color(0xFFD6E6FF), MaxBlue, Color(0xFF10286B))
+        state == VoiceState.ERROR -> listOf(Color(0xFFFFD6D6), Color(0xFFFF6B6B), Color(0xFF7A1A1A))
+        listening || state == VoiceState.WAKE_DETECTED ->
+            listOf(Color(0xFFD6E6FF), MaxBlue, Color(0xFF10286B))
         speaking -> listOf(Color(0xFFDFFFE8), Color(0xFF3DD68C), Color(0xFF0B5C36))
+        state == VoiceState.PROCESSING || state == VoiceState.EXECUTING ->
+            listOf(Color(0xFFE8E1FF), Color(0xFF8B7BD8), Color(0xFF2B2160))
         else -> listOf(Color(0xFFFFE3A3), MaxGold, MaxAmber)
     }
 

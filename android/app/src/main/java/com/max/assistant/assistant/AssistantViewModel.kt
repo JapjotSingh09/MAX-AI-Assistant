@@ -59,6 +59,24 @@ class AssistantViewModel(private val c: AppContainer) : ViewModel() {
     private var conversationId: String? = null
     private var nextId = 0L
 
+    /**
+     * One piece of short-lived conversational context: which app the user last
+     * acted on, so "search for X" can follow "open YouTube".
+     *
+     * Small and expiring on purpose - see ConversationContext.
+     */
+    private val context = ConversationContext()
+
+    /** Monotonic turn counter, so each latency summary can be identified. */
+    private var turnCounter = 0
+
+    /** Remembers an app MAX just opened, enabling a follow-up like "search X". */
+    private fun rememberContext(intent: CommandIntent) {
+        if (intent.action == ActionType.OPEN_APP) {
+            context.setApp(intent.str("appName"))
+        }
+    }
+
     /** The in-flight AI request. Cancelled when the user sends something new. */
     private var inFlight: Job? = null
 
@@ -81,11 +99,20 @@ class AssistantViewModel(private val c: AppContainer) : ViewModel() {
         if (text.isEmpty() || _state.value.busy) return
         addMessage(true, text)
         _state.update { it.copy(lastTurnWasVoice = fromVoice, offline = false, status = null) }
+        LatencyLog.mark("speechEnd")
 
         // LOCAL FIRST: deterministic commands never need the internet or an AI call.
-        when (val local = CommandParser.parse(text)) {
+        when (val local = CommandParser.parseWithContext(text, context.currentApp())) {
             is ParsedCommand.Intent -> {
+                LatencyLog.mark("parsed")
+                rememberContext(local.intent)
                 handleIntent(local.intent, null)
+                return
+            }
+            // MAX was not sure what was meant, so it ASKS. This is a complete
+            // answer, not a fallback: no AI call, no speculative action.
+            is ParsedCommand.Clarify -> {
+                addMessage(false, local.question)
                 return
             }
             // Memory commands and anything unrecognised go to the cloud: memories
@@ -98,7 +125,9 @@ class AssistantViewModel(private val c: AppContainer) : ViewModel() {
         inFlight?.cancel()
         inFlight = viewModelScope.launch {
             try {
+                LatencyLog.mark("aiSent")
                 val res = c.ai.chat(AIRequest(text, conversationId))
+                LatencyLog.mark("aiDone")
                 conversationId = res.conversationId ?: conversationId
                 _state.update { it.copy(thinking = false, status = null) }
                 addMessage(false, res.reply)
@@ -158,6 +187,7 @@ class AssistantViewModel(private val c: AppContainer) : ViewModel() {
     }
 
     private fun execute(p: PendingAction) {
+        LatencyLog.mark("execStart")
         val missing = c.permissions.missingFor(p.intent.action)
         if (missing.isNotEmpty()) {
             addMessage(false, c.permissions.explain(missing.first()))
@@ -177,6 +207,8 @@ class AssistantViewModel(private val c: AppContainer) : ViewModel() {
             }
             // MAX only says what really happened.
             addMessage(false, result.message)
+            LatencyLog.mark("execDone")
+            LatencyLog.flushSummary(turnCounter++)
         }
     }
 

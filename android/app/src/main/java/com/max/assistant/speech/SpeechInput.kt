@@ -15,7 +15,34 @@ import kotlinx.coroutines.flow.asStateFlow
 import java.util.Locale
 
 /** What MAX is doing with the microphone right now. Drives the UI animation. */
-enum class VoiceState { IDLE, LISTENING, PROCESSING, SPEAKING, ERROR }
+enum class VoiceState {
+    /** Not listening. Waiting for the user, or for the wake word. */
+    IDLE,
+
+    /** The wake word was heard; MAX is acknowledging before listening. */
+    WAKE_DETECTED,
+
+    /** The microphone is open and capturing a command. */
+    LISTENING,
+
+    /** A transcript arrived and is being turned into an action. */
+    PROCESSING,
+
+    /** An action is running on the device. */
+    EXECUTING,
+
+    /** MAX is speaking the reply aloud. */
+    SPEAKING,
+
+    /** Something failed; [VoiceUiState.error] says what. */
+    ERROR;
+
+    /** True while the microphone is genuinely open. */
+    val isListening: Boolean get() = this == LISTENING
+
+    /** True while MAX is busy and must not be re-triggered. */
+    val isBusy: Boolean get() = this == PROCESSING || this == EXECUTING || this == SPEAKING
+}
 
 /** Everything the UI needs to render the listening experience. */
 data class VoiceUiState(
@@ -67,6 +94,51 @@ class SpeechInput(private val context: Context) {
     fun isSupported(): Boolean = SpeechRecognizer.isRecognitionAvailable(context)
 
     /**
+     * Constructs the recogniser now, so the first tap on the mic is instant.
+     *
+     * WHY: `SpeechRecognizer.createSpeechRecognizer` is one of the more
+     * expensive steps in the voice path, and MAX used to pay for it on the
+     * FIRST command only - which is exactly why the first command felt slower
+     * than every later one.
+     *
+     * SAFETY: creating a recogniser does NOT open the microphone. It is pure
+     * CPU plus a binder round-trip to the speech service. Nothing is recorded
+     * and RECORD_AUDIO is not required until `startListening` is called. So
+     * doing this at startup adds no privacy cost whatsoever.
+     *
+     * @return true when a recogniser is ready for use.
+     */
+    fun prewarm(): Boolean {
+        if (recognizer != null) return true
+        if (!isSupported()) return false
+        return try {
+            recognizer = SpeechRecognizer.createSpeechRecognizer(context)
+            true
+        } catch (_: Exception) {
+            // A device without a usable recogniser must not crash the app at
+            // startup; start() will report the problem properly instead.
+            recognizer = null
+            false
+        }
+    }
+
+    /**
+     * Marks the wake word as heard, so the UI can acknowledge before listening.
+     *
+     * A distinct state rather than jumping straight to LISTENING: it is what
+     * stops the UI looking frozen for the moment between hearing "Hey MAX" and
+     * actually opening the microphone.
+     */
+    fun wakeDetected() {
+        if (!sessionActive) update { it.copy(state = VoiceState.WAKE_DETECTED, error = null) }
+    }
+
+    /** Marks that an action is running, so the orb reflects real progress. */
+    fun executing() {
+        if (!sessionActive) update { it.copy(state = VoiceState.EXECUTING) }
+    }
+
+    /**
      * Starts one recognition session.
      *
      * @param onText called with the final transcript, on the main thread.
@@ -91,7 +163,7 @@ class SpeechInput(private val context: Context) {
         sessionActive = true
         update { it.copy(state = VoiceState.LISTENING, partialText = "", error = null, amplitude = -1f, supported = true) }
 
-        val r = SpeechRecognizer.createSpeechRecognizer(context)
+        val r = recognizer ?: SpeechRecognizer.createSpeechRecognizer(context)
         recognizer = r
         r.setRecognitionListener(object : RecognitionListener {
             override fun onReadyForSpeech(params: Bundle?) {
@@ -176,13 +248,17 @@ class SpeechInput(private val context: Context) {
             prompt?.let { putExtra(RecognizerIntent.EXTRA_PROMPT, it) }
         }
 
-    /** Cancels the current session. The microphone closes immediately. */
+    /**
+     * Ends the current listening session. The microphone closes immediately.
+     *
+     * The recogniser object is KEPT, not destroyed. `cancel()` is what releases
+     * the microphone; `destroy()` throws the object away, which would undo the
+     * startup prewarm and make the NEXT command slow again. Only [release] fully
+     * disposes of it, and that runs when the signed-in UI goes away.
+     */
     fun stop() {
         sessionActive = false
-        val r = recognizer
-        recognizer = null
-        runCatching { r?.cancel() }
-        runCatching { r?.destroy() }
+        runCatching { recognizer?.cancel() }
         // Speaking is a separate concern (SpeechOutput), so a listening stop
         // must not knock MAX out of a sentence it is saying.
         if (_ui.value.state != VoiceState.SPEAKING) update { it.copy(state = VoiceState.IDLE, amplitude = -1f) }
@@ -190,9 +266,26 @@ class SpeechInput(private val context: Context) {
 
     private fun finish() {
         sessionActive = false
+        // Cancel, but keep the recogniser for reuse - see [stop].
+        runCatching { recognizer?.cancel() }
+    }
+
+    /**
+     * Fully disposes of the recogniser.
+     *
+     * Called when the signed-in UI goes away. Holding a speech recogniser open
+     * indefinitely is a resource leak, so the object is genuinely destroyed here
+     * rather than merely cancelled.
+     */
+    fun release() {
+        sessionActive = false
         val r = recognizer
         recognizer = null
+        runCatching { r?.cancel() }
         runCatching { r?.destroy() }
+        if (_ui.value.state != VoiceState.SPEAKING) {
+            update { it.copy(state = VoiceState.IDLE, amplitude = -1f) }
+        }
     }
 
     private fun fail(message: String, onError: (String) -> Unit) {

@@ -67,7 +67,7 @@ private fun MainTabs(
 
     // Release the microphone when the whole signed-in UI goes away. TTS is
     // long-lived and cheap, so it is only stopped on sign-out.
-    DisposableEffect(Unit) { onDispose { speech.stop(); speaker.stop() } }
+    DisposableEffect(Unit) { onDispose { speech.release(); speaker.stop() } }
 
     var autoListen by remember { mutableStateOf(false) }
 

@@ -1,5 +1,9 @@
 ﻿package com.max.assistant.assistant
 
+import com.max.assistant.assistant.nlu.Entities
+import com.max.assistant.assistant.nlu.IntentCategory
+import com.max.assistant.assistant.nlu.IntentRouter
+
 // LOCAL FIRST, CLOUD WHEN NEEDED.
 // Simple commands are recognised with plain rules: instant, free, and they work offline.
 // Anything not recognised returns null, and the ViewModel then asks the cloud AI.
@@ -15,6 +19,15 @@ sealed interface ParsedCommand {
     object MemoryList : ParsedCommand
     /** "forget that ..." - deletes matching memories on the server. */
     data class MemoryForget(val query: String) : ParsedCommand
+
+    /**
+     * MAX could not tell what was wanted, and asks instead of guessing.
+     *
+     * This is a first-class outcome, not a failure. Guessing is what produced
+     * the original bug - a plausible-looking action taken from an unclear
+     * sentence - so an unclear sentence now produces a QUESTION.
+     */
+    data class Clarify(val question: String) : ParsedCommand
 }
 
 object CommandParser {
@@ -65,7 +78,60 @@ object CommandParser {
             ?.let { ParsedCommand.Intent(it) }
 
 
-fun parse(input: String): ParsedCommand? {
+fun parseWithContext(input: String, fallbackApp: String? = null): ParsedCommand? {
+        // FORM-BASED FIRST, for commands the router cannot see.
+        //
+        // Alarms, timers, notes, tasks, memories and contacts are recognised by
+        // SHAPE, not by topic: "set an alarm for 7 AM", "create a note saying
+        // milk". The feature router intentionally does not try to extract that
+        // kind of payload, so these rules run before it and are unaffected by
+        // it. They were already correct, and they cannot misfire on a battery
+        // question, which is why they are safe to keep exactly as they were.
+        parseLegacy(input)?.let { return it }
+
+        // Then the INTENT router, for the questions and device readings that the
+        // keyword cascade used to mishandle.
+        val frame = IntentRouter.route(input)
+        when {
+            // A clear device reading: execute it.
+            frame.isExecutable && frame.action != null -> {
+                val params = frame.parameters.filterValues { it != null }
+                IntentValidator.validate(frame.action.name, params)
+                    ?.let { return ParsedCommand.Intent(it) }
+            }
+
+            // Genuinely ambiguous: ASK. Never act on a coin flip.
+            frame.category == IntentCategory.AMBIGUOUS && frame.clarification != null ->
+                return ParsedCommand.Clarify(frame.clarification)
+
+            // Otherwise fall through to the app router below, then to the AI.
+            else -> Unit
+        }
+
+        // App launch and in-app actions, resolved generically against whatever
+        // is actually installed. Runs LAST because it is the most permissive.
+        IntentRouter.routeApp(input, fallbackApp)?.let { appFrame ->
+            val action = appFrame.action
+            if (action != null) {
+                IntentValidator.validate(action.name, appFrame.parameters.filterValues { it != null })
+                    ?.let { return ParsedCommand.Intent(it) }
+            }
+        }
+
+        return null
+    }
+
+    /** Alias kept so existing callers keep compiling. */
+    fun parse(input: String): ParsedCommand? = parseWithContext(input)
+
+    /**
+     * The original keyword rules, for form-based commands.
+     *
+     * These remain the right tool for "set an alarm for 7 AM" or "create a note
+     * saying milk": those are recognisable by SHAPE, not by topic, and they
+     * capture a payload the feature router deliberately does not try to parse.
+     */
+    fun parseLegacy(input: String): ParsedCommand? {
         val t = normalize(input)
         val l = t.lowercase()
         var m: MatchResult?
@@ -228,9 +294,16 @@ fun parse(input: String): ParsedCommand? {
             // validation, and "no location" must stay a valid request.
             return if (loc.isNullOrBlank()) make(ActionType.OPEN_WEATHER) else make(ActionType.OPEN_WEATHER, "location" to loc)
         }
+        // "Search <App> for X" names an APP, so it belongs to the generic app
+        // router, not to the web. Both legacy search rules are gated on this
+        // one test: without it the web rules swallow every in-app search.
+        val namesAnApp = Entities.trailingApp(t) != null ||
+            Regex("^search\\s+(?:in|on)\\s+[\\p{L}].{0,30}\\s+for\\b", ci).containsMatchIn(t) ||
+            Regex("^search\\s+(?:for\\s+)?[\\p{L}][\\p{L}\\p{N} ._-]{1,30}\\s+for\\b", ci).containsMatchIn(t)
+
         // A bare "search for X" is a WEB search, so this rule must come before
         // the browser rule - both begin with the word "search".
-        m = Regex("^search (?:for )?(.{2,200})$", ci).find(t)
+        m = if (namesAnApp) null else Regex("^search (?:for )?(.{2,200})$", ci).find(t)
         if (m != null && !Regex("near me|nearby|around me|on (?:google )?maps", ci).containsMatchIn(m.groupValues[1])) {
             return make(ActionType.WEB_SEARCH, "query" to m.groupValues[1].trim())
         }
@@ -239,7 +312,8 @@ fun parse(input: String): ParsedCommand? {
             val raw = m.groupValues[1]
             return make(ActionType.OPEN_BROWSER, "url" to if (raw.startsWith("http", true)) raw else "https://$raw")
         }
-        m = Regex("^(?:google|search(?: the web| online)?(?: for)?|look up) (.{2,200})$", ci).find(t)
+        m = if (namesAnApp) null
+        else Regex("^(?:google|search(?: the web| online)?(?: for)?|look up) (.{2,200})$", ci).find(t)
         if (m != null) return make(ActionType.OPEN_BROWSER, "query" to m.groupValues[1].trim())
         m = Regex("^share (?:this )?(.{2,1000})$", ci).find(t)
         if (m != null) return make(ActionType.SHARE_TEXT, "text" to m.groupValues[1].trim())

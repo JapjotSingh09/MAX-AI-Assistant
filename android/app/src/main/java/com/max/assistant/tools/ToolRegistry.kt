@@ -81,6 +81,29 @@ object ToolRegistry {
             ActionType.READ_CALENDAR, "Device",
             androidLimit = "Android does not let a normal app read calendar events, so MAX opens your calendar app."
         ),
+        // --- Device information -------------------------------------------
+        // READ-ONLY and permission-free: these answer a question from a sensor
+        // or a system setting instead of opening anything. That is the
+        // distinction this section exists to make explicit.
+        ToolSpec(ActionType.READ_BATTERY_LEVEL, "Information"),
+        ToolSpec(ActionType.BATTERY_ESTIMATE_QUERY, "Information"),
+        ToolSpec(ActionType.READ_WIFI_STATUS, "Information"),
+        ToolSpec(ActionType.READ_BLUETOOTH_STATUS, "Information"),
+        ToolSpec(ActionType.READ_DEVICE_INFO, "Information"),
+        ToolSpec(ActionType.READ_STORAGE, "Information"),
+        ToolSpec(ActionType.READ_DISPLAY_INFO, "Information"),
+        ToolSpec(ActionType.READ_SOUND_INFO, "Information"),
+        ToolSpec(
+            ActionType.SET_BATTERY_SAVER, "Device",
+            androidLimit = "Battery saver is a global system setting. Android gives apps no API to change it, so MAX opens that screen for you."
+        ),
+        // Generic app actions: one entry covering every app, because the app is
+        // a parameter resolved against the real PackageManager rather than a
+        // branch in the code.
+        ToolSpec(
+            ActionType.APP_ACTION, "Apps",
+            androidLimit = "Third-party apps expose different actions. MAX uses their public deep links where they exist, and otherwise opens the app and tells you it needs a tap."
+        ),
         // --- Personal data kept on the phone ----------------------------
         ToolSpec(ActionType.CREATE_NOTE, "Notes"),
         ToolSpec(ActionType.LIST_NOTES, "Notes"),

@@ -31,6 +31,13 @@ class AndroidActionExecutor(
     private val alarms = AlarmAction(context)
     private val local: LocalStore = container.localStore
 
+    /**
+     * Device INFORMATION. Every branch here READS a value and answers with it.
+     * Not one of them starts an Activity - that separation is the whole point
+     * of splitting these out from OPEN_SETTINGS.
+     */
+    private val info = DeviceInfoAction(context)
+
     fun execute(intent: CommandIntent): ActionResult = try {
         when (intent.action) {
             ActionType.OPEN_APP -> apps.open(intent.str("appName").orEmpty())
@@ -48,6 +55,23 @@ class AndroidActionExecutor(
             ActionType.CREATE_REMINDER -> createReminder(intent.str("text").orEmpty(), intent.str("when"))
             ActionType.OPEN_CAMERA -> startActivity(Intent(MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA), "Opened the camera.")
             ActionType.OPEN_SETTINGS -> startActivity(Intent(settingsAction(intent.str("section"))), "Opened settings.")
+            // --- Device information: read a fact, never open a screen ---
+            ActionType.READ_BATTERY_LEVEL -> info.readBatteryLevel()
+            ActionType.BATTERY_ESTIMATE_QUERY -> info.readBatteryEstimate()
+            ActionType.READ_WIFI_STATUS -> info.readWifiStatus()
+            ActionType.READ_BLUETOOTH_STATUS -> info.readBluetoothStatus()
+            ActionType.READ_DEVICE_INFO -> info.readDeviceInfo()
+            ActionType.READ_STORAGE -> info.readStorage()
+            ActionType.READ_DISPLAY_INFO -> info.readDisplayInfo()
+            ActionType.READ_SOUND_INFO -> info.readSoundInfo()
+            ActionType.SET_BATTERY_SAVER -> info.setBatterySaver(intent.str("state"))
+            // Generic: one branch serves every app, because the app and the
+            // operation are parameters, not cases.
+            ActionType.APP_ACTION -> apps.act(
+                intent.str("appName").orEmpty(),
+                appOperation(intent.str("operation")),
+                intent.str("entity")
+            )
             ActionType.ADJUST_VOLUME -> adjustVolume(intent.str("direction"))
             ActionType.TOGGLE_FLASHLIGHT -> flashlight(intent.str("state"))
             ActionType.SET_BLUETOOTH -> setBluetooth()
@@ -72,6 +96,21 @@ class AndroidActionExecutor(
     }
 
 
+    /**
+ * The wire name for an app operation. Validation already restricted this to the
+ * enum, so the fallback is unreachable in practice; it exists so an unexpected
+ * value degrades to "just open the app" rather than throwing.
+ */
+private fun appOperation(name: String?): AppOperation = when (name) {
+    "SEARCH" -> AppOperation.SEARCH
+    "PLAY" -> AppOperation.PLAY
+    "PROFILE" -> AppOperation.PROFILE
+    "CHAT" -> AppOperation.CHAT
+    "NAVIGATE" -> AppOperation.NAVIGATE
+    "COMPOSE" -> AppOperation.COMPOSE
+    else -> AppOperation.OPEN
+}
+
     private fun startActivity(intent: Intent, okMessage: String): ActionResult {
         context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         return ActionResult.Completed(okMessage)
@@ -84,6 +123,9 @@ class AndroidActionExecutor(
         "display" -> Settings.ACTION_DISPLAY_SETTINGS
         "battery" -> Settings.ACTION_BATTERY_SAVER_SETTINGS
         "location" -> Settings.ACTION_LOCATION_SOURCE_SETTINGS
+        // Storage has no single public constant; the app-list page is the only
+        // place Android exposes it, so it is the honest target.
+        "storage" -> Settings.ACTION_APPLICATION_SETTINGS
         else -> Settings.ACTION_SETTINGS
     }
 

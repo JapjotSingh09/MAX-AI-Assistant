@@ -17,6 +17,100 @@ import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
+ * The single source of truth for what the voice pipeline is doing.
+ *
+ * WHY A SHARED MACHINE: the bug this prevents is the classic one - the wake
+ * word service and the UI each tracking "am I listening?" separately, so a
+ * command captured by one is executed twice by the other. One machine, one
+ * question, one answer.
+ *
+ * It is also the "single source of truth" the specification asks for: every
+ * component asks this instead of guessing, and every transition is explicit, so
+ * an illegal jump (IDLE -> EXECUTING with no command) cannot happen.
+ */
+object VoiceSession {
+    /** The legal states, in lifecycle order. ERROR and IDLE are terminal-ish. */
+    enum class State {
+        /** Waiting. The microphone is closed. */
+        IDLE,
+
+        /** The wake word was heard; acknowledging. */
+        WAKE_DETECTED,
+
+        /** The microphone is open, capturing one command. */
+        LISTENING,
+
+        /** A transcript arrived and is being routed. */
+        PROCESSING,
+
+        /** An action is running on the device. */
+        EXECUTING,
+
+        /** MAX is speaking the reply. */
+        RESPONDING,
+
+        /** Something failed. */
+        ERROR
+    }
+
+    @Volatile
+    var state: State = State.IDLE
+        private set
+
+    /** Guards every transition, so a late callback cannot rewind the machine. */
+    private val lock = Any()
+
+    /**
+     * Moves to [next] and returns true, or returns false when the transition is
+     * not permitted from the current state.
+     *
+     * Re-entering the SAME state is rejected too: that is what stops a
+     * duplicate wake word or a repeated partial result from starting a second
+     * listening session.
+     */
+    @Synchronized
+    fun moveTo(next: State): Boolean = synchronized(lock) {
+        if (state == next) return false
+        if (!allowed(state, next)) return false
+        state = next
+        true
+    }
+
+    /** Whether [from] may become [to]. */
+    private fun allowed(from: State, to: State): Boolean = when (to) {
+        // Listening can only ever be entered from idle or from the wake word.
+        State.LISTENING -> from == State.IDLE || from == State.WAKE_DETECTED
+        // One command at a time: nothing may jump in while one is running.
+        State.PROCESSING -> from == State.LISTENING || from == State.WAKE_DETECTED
+        State.EXECUTING -> from == State.PROCESSING
+        State.RESPONDING -> from == State.EXECUTING || from == State.PROCESSING
+        // Returning to idle is always allowed: it is the safe resting state.
+        State.IDLE -> true
+        State.WAKE_DETECTED -> from == State.IDLE
+        // An error can always be reported, from anywhere.
+        State.ERROR -> true
+    }
+
+    /** Forces the machine back to idle, e.g. after a cancellation. */
+    @Synchronized
+    fun reset() {
+        synchronized(lock) { state = State.IDLE }
+    }
+
+    /** True while the microphone should be open. */
+    val isListening: Boolean get() = state == State.LISTENING
+
+    /**
+     * True when a new command must NOT be started.
+     *
+     * The single guard against duplicate commands: one flag consulted before
+     * anything opens the microphone.
+     */
+    val isBusy: Boolean
+        get() = state == State.PROCESSING || state == State.EXECUTING || state == State.RESPONDING
+}
+
+/**
  * "Hey MAX" - the closest thing a third-party Android app can honestly offer.
  *
  * ---------------------------------------------------------------------------
@@ -125,6 +219,11 @@ class WakeWordService : Service() {
     /** Runs one short detection window. */
     private fun listenWindow() {
         if (!running.get()) return
+        // Never open a second microphone while a command is being handled. This
+        // is the guard against two SpeechRecognizer instances competing, which
+        // produces ERROR_RECOGNIZER_BUSY and a recognisation loop.
+        if (VoiceSession.isBusy || handlingCommand) return
+        if (!VoiceSession.moveTo(VoiceSession.State.LISTENING)) return
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             // Permission was revoked while we ran. Stop rather than spin.
             status = "Microphone permission was removed"
@@ -214,7 +313,13 @@ class WakeWordService : Service() {
      * open while MAX works.
      */
     private fun reactTo(spoken: String) {
+        // The SINGLE duplicate-command guard. A wake phrase can arrive on both
+        // a partial result and a final result, and MAX must act on it once.
+        // VoiceSession rejects the transition the second time, so this whole
+        // method becomes a no-op rather than opening the app twice.
         if (handlingCommand) return
+        if (!VoiceSession.moveTo(VoiceSession.State.WAKE_DETECTED)) return
+
         handlingCommand = true
         releaseRecognizer()
         status = "Heard you"
@@ -230,9 +335,12 @@ class WakeWordService : Service() {
             .ifBlank { spoken.trim() }
 
         dispatch(command)
-        // Re-arm the loop after the command has had time to run.
+        // Re-arm the loop after the command has had time to run. The state is
+        // released here rather than in dispatch(), so a slow command still gets
+        // a clean window afterwards.
         handler.postDelayed({
             handlingCommand = false
+            VoiceSession.reset()
             if (running.get()) scheduleNextWindow(IDLE_GAP_MS)
         }, 4_000L)
     }
@@ -287,6 +395,7 @@ class WakeWordService : Service() {
         running.set(false)
         handler.removeCallbacksAndMessages(null)
         releaseRecognizer()
+        VoiceSession.reset()
     }
 
     /** Full shutdown: loop, microphone, notification, service. */
@@ -296,6 +405,7 @@ class WakeWordService : Service() {
         // stopForeground(true) overload is dead code and is not needed.
         stopForeground(STOP_FOREGROUND_REMOVE)
         isRunning = false
+        handlingCommand = false
         stopSelf()
     }
 }
