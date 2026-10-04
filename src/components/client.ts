@@ -26,7 +26,11 @@ export const SERVER_UNREACHABLE = "Can't reach the MAX server. Check your connec
 const OFFLINE = "You're offline.";
 const TIMEOUT = "The request timed out. Please try again.";
 
-const REQUEST_TIMEOUT_MS = 30000;
+// Exported so the auth regression tests can assert the invariant that matters:
+// every server-side database timeout must be strictly shorter than this, so the
+// server always answers with a real reason before the client gives up. See
+// tests/authRegression.test.ts.
+export const REQUEST_TIMEOUT_MS = 30000;
 
 // True only when the browser itself reports no network. Any other fetch
 // failure (server down, CORS, DNS, HTTPS/mixed-content, refused connection)

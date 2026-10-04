@@ -29,6 +29,9 @@ jobs:
       # Unit tests only. The e2e suite is separate below because it needs a
       # running server and a migrated database.
       - run: npx vitest run tests/commands.test.ts tests/tools.test.ts tests/ai.test.ts
+      # Auth regression (guards the "Request Timed Out" login bug). Needs no DB.
+      - name: Auth regression tests
+        run: npm run test:auth
       - run: npx drizzle-kit push --force
       - run: npm run build
       - name: End-to-end API tests (data isolation, 401, 429, ...)
@@ -36,6 +39,11 @@ jobs:
           npx next start -p 3100 &
           sleep 6
           E2E_BASE_URL=http://localhost:3100 npx vitest run tests/e2e.test.ts
+      # MANDATORY login regression: proves a real session works against the
+      # running backend. This is the check that would have caught the login
+      # timeout. See AGENTS.md.
+      - name: Live login smoke test
+        run: SMOKE_BASE_URL=http://localhost:3100 npm run smoke:login
 
   android:
     runs-on: ubuntu-latest

@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Orb } from "@/components/Orb";
 import { ApiFail, call, errMsg } from "@/components/client";
 
@@ -26,10 +26,17 @@ export function AuthScreen({ resetToken, notice, onAuthed }: { resetToken: strin
 
   const working = isSigningUp || isLoggingIn || busy;
 
+  // A ref, not just the `working` state: setState does not take effect until the
+  // next render, so two clicks landing in the same tick (double-tap, Enter held
+  // down, a fast double submit) both read `working === false` and both fire a
+  // request. A ref updates synchronously and closes that window.
+  const inFlight = useRef(false);
+
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     // Duplicate-request protection: ignore submits while one is running or cooling down.
-    if (working || cooldown > 0) return;
+    if (inFlight.current || cooldown > 0) return;
+    inFlight.current = true;
     setError(null);
     setInfo(null);
     try {
@@ -57,6 +64,9 @@ export function AuthScreen({ resetToken, notice, onAuthed }: { resetToken: strin
       setError(errMsg(err));
       if (err instanceof ApiFail && err.status === 429) setCooldown(20);
     } finally {
+      // Released here (not on success) so a throw inside onAuthed() cannot
+      // leave the form permanently disabled.
+      inFlight.current = false;
       setIsSigningUp(false);
       setIsLoggingIn(false);
       setBusy(false);

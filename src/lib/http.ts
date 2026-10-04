@@ -46,6 +46,30 @@ function errorCode(err: unknown): string | undefined {
   }
   return undefined;
 }
+// pg's own connectionTimeoutMillis (see src/db/index.ts) rejects with a bare
+// Error that carries NO `code`, so errorCode() returns undefined and the failure
+// would be reported as a generic 500. It means exactly one thing though - the
+// database could not be reached in time - so it belongs with the other
+// "database_unavailable" codes, not with unknown internal errors.
+const POOL_TIMEOUT_MESSAGES = [
+  "connection terminated due to connection timeout",
+  "timeout exceeded when trying to connect",
+  "connection terminated unexpectedly",
+];
+
+export function isPoolTimeout(err: unknown): boolean {
+  let cur: unknown = err;
+  for (let i = 0; i < 6 && cur; i++) {
+    const message = (cur as { message?: unknown })?.message;
+    if (typeof message === "string") {
+      const m = message.toLowerCase();
+      if (POOL_TIMEOUT_MESSAGES.some((t) => m.includes(t))) return true;
+    }
+    cur = (cur as { cause?: unknown })?.cause;
+  }
+  return false;
+}
+
 
 // Nothing that reaches a log line or an HTTP body may contain the connection
 // string, a password or a key. Drizzle's own error message embeds the statement
@@ -96,6 +120,12 @@ export const errorDetail = describeDbError;
 export const isUniqueViolation = (err: unknown) => errorCode(err) === "23505";
 
 export const DB_NOT_INITIALIZED = "MAX's database isn't set up yet. Please try again in a moment.";
+
+// The database could not be reached at all (wrong/sleeping DATABASE_URL, network
+// or firewall). Distinct from DB_NOT_INITIALIZED: applying migrations cannot fix
+// this, so the message must not tell the user to wait for a schema that will
+// never arrive.
+export const DB_UNAVAILABLE = "MAX can't reach its database right now. Please try again in a moment.";
 
 export function getIp(req: Request) {
   return req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || req.headers.get("x-real-ip") || "unknown";
@@ -162,6 +192,14 @@ export function api<Auth extends boolean>(opts: Opts<Auth>, handler: Handler<Aut
         // The SQLSTATE and the driver's message go to the log (scrubbed); the
         // client only learns that the database is not ready yet.
         console.error(JSON.stringify({ level: "error", requestId, msg: "db.migrate.failed", ...describeDbError(err) }));
+        // Distinguish "the tables are missing" from "the database cannot be
+        // reached". Only the first is fixed by applying migrations; telling a
+        // user to wait for a schema that can never be applied was part of why
+        // an unreachable database looked like a vague, unfixable failure.
+        const code = errorCode(err);
+        if ((code && DB_UNAVAILABLE_ERRORS.has(code)) || isPoolTimeout(err)) {
+          throw new ApiError(503, "database_unavailable", DB_UNAVAILABLE);
+        }
         throw new ApiError(503, "database_not_initialized", DB_NOT_INITIALIZED);
       }
       if (opts.authBucket) {
@@ -195,13 +233,10 @@ export function api<Auth extends boolean>(opts: Opts<Auth>, handler: Handler<Aut
           status = 503;
           category = "database_not_initialized";
           res = Response.json({ error: { code: category, message: DB_NOT_INITIALIZED, requestId } }, { status });
-        } else if (code && DB_UNAVAILABLE_ERRORS.has(code)) {
+        } else if ((code && DB_UNAVAILABLE_ERRORS.has(code)) || isPoolTimeout(err)) {
           status = 503;
           category = "database_unavailable";
-          res = Response.json(
-            { error: { code: category, message: "MAX can't reach its database right now. Please try again in a moment.", requestId } },
-            { status },
-          );
+          res = Response.json({ error: { code: category, message: DB_UNAVAILABLE, requestId } }, { status });
         } else if (isSqlState(code)) {
           // The database itself rejected the statement (constraint, permission,
           // bad input). That is a server-side problem, not the caller's fault,
